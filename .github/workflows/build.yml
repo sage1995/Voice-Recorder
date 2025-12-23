@@ -3,9 +3,7 @@ name: Build Fossify Voice Recorder
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch: # This adds a manual "Run" button in GitHub Actions
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,17 +18,24 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'gradle' # Speeds up future builds
+          cache: 'gradle'
 
-      - name: Grant Execute Permission for Gradlew
+      - name: Grant Execute Permission
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
+      # We use 'assembleFossDebug' to target the open-source flavor specifically
+      - name: Build Foss Debug APK
+        run: ./gradlew assembleFossDebug
+
+      # This debug step lists all files so you can see the path in the logs
+      - name: List files (For Debugging)
+        run: find app/build/outputs/apk/ -name "*.apk"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Fossify-Voice-Recorder-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: Fossify-Voice-Recorder
+          # The '**' tells GitHub to look inside ALL subfolders
+          path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+          
