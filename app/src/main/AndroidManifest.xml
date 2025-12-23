@@ -108,7 +108,7 @@
 
         <service
             android:name=".services.RecorderService"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="microphone">
             <intent-filter>
                 <action android:name="org.fossify.voicerecorder.action.GET_RECORDER_INFO" />
