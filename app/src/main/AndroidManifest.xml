@@ -59,6 +59,17 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_record_display" />
         </receiver>
+        
+        <receiver 
+            android:name=".receivers.BootReceiver"
+            android:exported="true"> <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+        <receiver 
+            android:name=".receivers.DailyRecordReceiver" 
+            android:exported="false" />
 
         <activity
             android:name="org.fossify.voicerecorder.activities.BackgroundRecordActivity"
