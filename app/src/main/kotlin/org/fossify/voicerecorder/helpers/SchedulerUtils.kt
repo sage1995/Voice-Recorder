@@ -50,21 +50,15 @@ object SchedulerUtils {
             e.printStackTrace()
         }
     }
-
     fun startRecordingService(context: Context) {
-        // FIX: Use a specific START action, NOT TOGGLE_PAUSE
         val serviceIntent = Intent(context, RecorderService::class.java).apply {
-            action = ACTION_START_RECORDING
+            // Reference the constant from the Service companion
+            action = RecorderService.ACTION_START_RECORDING 
         }
-        
-        try {
-            context.startForegroundService(serviceIntent)
-            saveLastRunDate(context)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        context.startForegroundService(serviceIntent)
+        saveLastRunDate(context)
     }
-
+    
     fun hasRecordedToday(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val lastRun = prefs.getLong(KEY_LAST_RECORD_DATE, 0)
