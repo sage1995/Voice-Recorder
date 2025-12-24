@@ -40,6 +40,7 @@ import org.fossify.voicerecorder.helpers.RECORDING_PAUSED
 import org.fossify.voicerecorder.helpers.RECORDING_RUNNING
 import org.fossify.voicerecorder.helpers.RECORDING_STOPPED
 import org.fossify.voicerecorder.helpers.STOP_AMPLITUDE_UPDATE
+import org.fossify.voicerecorder.helpers.SchedulerUtils
 import org.fossify.voicerecorder.helpers.TOGGLE_PAUSE
 import org.fossify.voicerecorder.models.Events
 import org.fossify.voicerecorder.recorder.MediaRecorderWrapper
@@ -69,18 +70,21 @@ class RecorderService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
-        super.onStartCommand(intent, flags, startId)
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 🔴 CRITICAL: promote to foreground immediately to prevent Android 12+ crashes
+        startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
 
-        when (intent.action) {
+        when (intent?.action) {
             GET_RECORDER_INFO -> broadcastRecorderInfo()
             STOP_AMPLITUDE_UPDATE -> amplitudeTimer.cancel()
             TOGGLE_PAUSE -> togglePause()
             CANCEL_RECORDING -> cancelRecording()
+            // Explicitly handle the start action, or fall through to else
+            SchedulerUtils.ACTION_START_RECORDING -> startRecording()
             else -> startRecording()
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -140,6 +144,7 @@ class RecorderService : Service() {
             duration = 0
             status = RECORDING_RUNNING
             broadcastRecorderInfo()
+            // Update notification to show "Recording" state
             startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
 
             durationTimer = Timer()
