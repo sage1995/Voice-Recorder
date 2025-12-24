@@ -7,25 +7,31 @@ import org.fossify.voicerecorder.helpers.SchedulerUtils
 import java.util.Calendar
 
 class BootReceiver : BroadcastReceiver() {
+
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            
-            // 1. Always ensure the Alarm is set for the future (persistence)
+
+        val action = intent.action ?: return
+
+        if (
+            action == "android.intent.action.BOOT_COMPLETED" ||
+            action == "android.intent.action.QUICKBOOT_POWERON"
+        ) {
+
+            // 1. Always reschedule the alarm after reboot
             SchedulerUtils.scheduleDailyRecord(context)
 
-            // 2. CHECK FOR MISSED RECORDING
+            // 2. Catch-up if we missed today's 6:00 AM
             val now = Calendar.getInstance()
+
             val targetTime = Calendar.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 6)
                 set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
             }
 
-            // If "Now" is past 6:00 AM... AND we haven't recorded today yet...
             if (now.after(targetTime) && !SchedulerUtils.hasRecordedToday(context)) {
-                // ...Start recording immediately! (Catch-up)
                 SchedulerUtils.startRecordingService(context)
             }
         }
     }
 }
-
