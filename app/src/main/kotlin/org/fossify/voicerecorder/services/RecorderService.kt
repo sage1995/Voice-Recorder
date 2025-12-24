@@ -32,16 +32,7 @@ import org.fossify.voicerecorder.R
 import org.fossify.voicerecorder.activities.SplashActivity
 import org.fossify.voicerecorder.extensions.config
 import org.fossify.voicerecorder.extensions.updateWidgets
-import org.fossify.voicerecorder.helpers.CANCEL_RECORDING
-import org.fossify.voicerecorder.helpers.EXTENSION_MP3
-import org.fossify.voicerecorder.helpers.GET_RECORDER_INFO
-import org.fossify.voicerecorder.helpers.RECORDER_RUNNING_NOTIF_ID
-import org.fossify.voicerecorder.helpers.RECORDING_PAUSED
-import org.fossify.voicerecorder.helpers.RECORDING_RUNNING
-import org.fossify.voicerecorder.helpers.RECORDING_STOPPED
-import org.fossify.voicerecorder.helpers.STOP_AMPLITUDE_UPDATE
-import org.fossify.voicerecorder.helpers.SchedulerUtils
-import org.fossify.voicerecorder.helpers.TOGGLE_PAUSE
+import org.fossify.voicerecorder.helpers.* // This imports TOGGLE_PAUSE, etc.
 import org.fossify.voicerecorder.models.Events
 import org.fossify.voicerecorder.recorder.MediaRecorderWrapper
 import org.fossify.voicerecorder.recorder.Mp3Recorder
@@ -54,14 +45,14 @@ import java.util.TimerTask
 class RecorderService : Service() {
     companion object {
         var isRunning = false
-
         private const val AMPLITUDE_UPDATE_MS = 75L
+        
+        // Define it here so the compiler definitely finds it
+        const val ACTION_START_RECORDING = "org.fossify.voicerecorder.action.START_RECORDING"
     }
-
 
     private var recordingPath = ""
     private var resultUri: Uri? = null
-
     private var duration = 0
     private var status = RECORDING_STOPPED
     private var durationTimer = Timer()
@@ -71,7 +62,7 @@ class RecorderService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 🔴 CRITICAL: promote to foreground immediately to prevent Android 12+ crashes
+        // Promote to foreground immediately to satisfy Android 12+ requirements
         startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
 
         when (intent?.action) {
@@ -79,8 +70,8 @@ class RecorderService : Service() {
             STOP_AMPLITUDE_UPDATE -> amplitudeTimer.cancel()
             TOGGLE_PAUSE -> togglePause()
             CANCEL_RECORDING -> cancelRecording()
-            // Explicitly handle the start action, or fall through to else
-            SchedulerUtils.ACTION_START_RECORDING -> startRecording()
+            // Using the local companion constant to fix the compilation error
+            ACTION_START_RECORDING -> startRecording()
             else -> startRecording()
         }
 
@@ -94,7 +85,6 @@ class RecorderService : Service() {
         updateWidgets(false)
     }
 
-    // mp4 output format with aac encoding should produce good enough m4a files according to https://stackoverflow.com/a/33054794/1967672
     @SuppressLint("DiscouragedApi")
     private fun startRecording() {
         isRunning = true
@@ -144,7 +134,8 @@ class RecorderService : Service() {
             duration = 0
             status = RECORDING_RUNNING
             broadcastRecorderInfo()
-            // Update notification to show "Recording" state
+            
+            // Re-show notification with "Recording" text
             startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
 
             durationTimer = Timer()
@@ -166,16 +157,10 @@ class RecorderService : Service() {
             try {
                 stop()
                 release()
-            } catch (
-                @Suppress(
-                    "TooGenericExceptionCaught",
-                    "SwallowedException"
-                ) e: RuntimeException
-            ) {
+            } catch (e: RuntimeException) {
                 toast(R.string.recording_too_short)
             } catch (e: Exception) {
                 showErrorToast(e)
-                e.printStackTrace()
             }
 
             ensureBackgroundThread {
@@ -195,8 +180,7 @@ class RecorderService : Service() {
             try {
                 stop()
                 release()
-            } catch (ignored: Exception) {
-            }
+            } catch (ignored: Exception) {}
         }
 
         recorder = null
@@ -251,7 +235,6 @@ class RecorderService : Service() {
                 toast(org.fossify.commons.R.string.unknown_error_occurred)
                 return@scanFile
             }
-
             recordingSavedSuccessfully(resultUri ?: uri)
         }
     }
@@ -276,8 +259,7 @@ class RecorderService : Service() {
                 try {
                     EventBus.getDefault()
                         .post(Events.RecordingAmplitude(recorder!!.getMaxAmplitude()))
-                } catch (ignored: Exception) {
-                }
+                } catch (ignored: Exception) {}
             }
         }
     }
@@ -285,8 +267,7 @@ class RecorderService : Service() {
     private fun showNotification(): Notification {
         val channelId = "simple_recorder"
         val label = getString(R.string.app_name)
-        val notificationManager =
-            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         NotificationChannel(channelId, label, NotificationManager.IMPORTANCE_DEFAULT).apply {
             setSound(null, null)
@@ -294,15 +275,14 @@ class RecorderService : Service() {
         }
 
         val icon = R.drawable.ic_graphic_eq_vector
-        val title = label
         val visibility = NotificationCompat.VISIBILITY_PUBLIC
         var text = getString(R.string.recording)
         if (status == RECORDING_PAUSED) {
             text += " (${getString(R.string.paused)})"
         }
 
-        val builder = NotificationCompat.Builder(this, channelId)
-            .setContentTitle(title)
+        return NotificationCompat.Builder(this, channelId)
+            .setContentTitle(label)
             .setContentText(text)
             .setSmallIcon(icon)
             .setContentIntent(getOpenAppIntent())
@@ -311,8 +291,7 @@ class RecorderService : Service() {
             .setSound(null)
             .setOngoing(true)
             .setAutoCancel(true)
-
-        return builder.build()
+            .build()
     }
 
     private fun getOpenAppIntent(): PendingIntent {
@@ -337,3 +316,12 @@ class RecorderService : Service() {
         return config.extension == EXTENSION_MP3
     }
 }
+
+
+
+
+
+
+
+
+
