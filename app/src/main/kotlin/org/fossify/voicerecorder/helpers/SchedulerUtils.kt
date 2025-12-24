@@ -10,7 +10,12 @@ import java.util.Calendar
 
 object SchedulerUtils {
 
-    // 1. Schedule the 6:00 AM Alarm
+    private const val PREFS_NAME = "RecorderSchedulerPrefs"
+    private const val KEY_LAST_RECORD_DATE = "last_record_date"
+    
+    // Define a specific action for starting
+    const val ACTION_START_RECORDING = "org.fossify.voicerecorder.action.START_RECORDING"
+
     fun scheduleDailyRecord(context: Context) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, DailyRecordReceiver::class.java)
@@ -20,59 +25,61 @@ object SchedulerUtils {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Set target time to 6:00 AM
+        val now = System.currentTimeMillis()
         val calendar = Calendar.getInstance().apply {
-            timeInMillis = System.currentTimeMillis()
+            timeInMillis = now
             set(Calendar.HOUR_OF_DAY, 6)
             set(Calendar.MINUTE, 0)
             set(Calendar.SECOND, 0)
         }
 
-        // If it is already past 6:00 AM, schedule for TOMORROW
-        if (calendar.timeInMillis <= System.currentTimeMillis()) {
+        // Logic Check:
+        // If it is currently 8:00 AM, the calendar time (6:00 AM) is in the past.
+        // Usually, we add 1 day. 
+        // BUT, if we add 1 day, we rely on the BootReceiver to handle the "Catch up" for today.
+        if (calendar.timeInMillis <= now) {
             calendar.add(Calendar.DAY_OF_YEAR, 1)
         }
 
-        // Use AlarmManager.RTC_WAKEUP to wake the phone up if it's dozing
         try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                if (alarmManager.canScheduleExactAlarms()) {
-                     alarmManager.setExactAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        calendar.timeInMillis,
-                        pendingIntent
-                    )
-                } else {
-                    // Fallback if permission is missing (essential for Android 13/14)
-                    alarmManager.setAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        calendar.timeInMillis,
-                        pendingIntent
-                    )
-                }
-            } else {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    calendar.timeInMillis,
-                    pendingIntent
-                )
-            }
+            // Using setAlarmClock is much more reliable for exact timing than setExactAndAllowWhileIdle
+            // It ensures the phone wakes up even from deep sleep/Doze.
+            val alarmClockInfo = AlarmManager.AlarmClockInfo(calendar.timeInMillis, pendingIntent)
+            alarmManager.setAlarmClock(alarmClockInfo, pendingIntent)
         } catch (e: SecurityException) {
             e.printStackTrace()
         }
     }
 
-    // 2. Helper to start the service immediately
     fun startRecordingService(context: Context) {
-        val serviceIntent = Intent(context, RecorderService::class.java)
-        // We do NOT use TOGGLE_PAUSE here. We want the default start action.
-        // serviceIntent.action = "org.fossify.voicerecorder.action.TOGGLE_PAUSE" 
-        
-        // Android 8+ requires startForegroundService
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            context.startForegroundService(serviceIntent)
-        } else {
-            context.startService(serviceIntent)
+        // FIX: Use a specific START action, NOT TOGGLE_PAUSE
+        val serviceIntent = Intent(context, RecorderService::class.java).apply {
+            action = ACTION_START_RECORDING
         }
+        
+        try {
+            context.startForegroundService(serviceIntent)
+            saveLastRunDate(context)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun hasRecordedToday(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val lastRun = prefs.getLong(KEY_LAST_RECORD_DATE, 0)
+        
+        if (lastRun == 0L) return false
+
+        val lastDate = Calendar.getInstance().apply { timeInMillis = lastRun }
+        val today = Calendar.getInstance()
+
+        return lastDate.get(Calendar.YEAR) == today.get(Calendar.YEAR) &&
+               lastDate.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR)
+    }
+
+    private fun saveLastRunDate(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putLong(KEY_LAST_RECORD_DATE, System.currentTimeMillis()).apply()
     }
 }
