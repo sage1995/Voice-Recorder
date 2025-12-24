@@ -69,10 +69,12 @@ class RecorderService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
-        super.onStartCommand(intent, flags, startId)
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
-        when (intent.action) {
+        // 🔴 CRITICAL: promote to foreground immediately
+        startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
+
+        when (intent?.action) {
             GET_RECORDER_INFO -> broadcastRecorderInfo()
             STOP_AMPLITUDE_UPDATE -> amplitudeTimer.cancel()
             TOGGLE_PAUSE -> togglePause()
@@ -80,9 +82,8 @@ class RecorderService : Service() {
             else -> startRecording()
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
-
     override fun onDestroy() {
         super.onDestroy()
         stopRecording()
