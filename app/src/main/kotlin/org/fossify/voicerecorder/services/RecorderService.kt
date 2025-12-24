@@ -8,23 +8,15 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
 import android.os.IBinder
-import android.provider.DocumentsContract
+import android.os.UserManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
-import org.fossify.commons.extensions.createDocumentUriUsingFirstParentTreeUri
-import org.fossify.commons.extensions.createSAFFileSdk30
-import org.fossify.commons.extensions.getCurrentFormattedDateTime
-import org.fossify.commons.extensions.getDocumentFile
-import org.fossify.commons.extensions.getFilenameFromPath
-import org.fossify.commons.extensions.getLaunchIntent
-import org.fossify.commons.extensions.getMimeType
-import org.fossify.commons.extensions.getParentPath
-import org.fossify.commons.extensions.isPathOnSD
-import org.fossify.commons.extensions.showErrorToast
-import org.fossify.commons.extensions.toast
+import org.fossify.commons.extensions.*
 import org.fossify.commons.helpers.ensureBackgroundThread
 import org.fossify.commons.helpers.isRPlus
 import org.fossify.voicerecorder.BuildConfig
@@ -32,15 +24,7 @@ import org.fossify.voicerecorder.R
 import org.fossify.voicerecorder.activities.SplashActivity
 import org.fossify.voicerecorder.extensions.config
 import org.fossify.voicerecorder.extensions.updateWidgets
-import org.fossify.voicerecorder.helpers.CANCEL_RECORDING
-import org.fossify.voicerecorder.helpers.EXTENSION_MP3
-import org.fossify.voicerecorder.helpers.GET_RECORDER_INFO
-import org.fossify.voicerecorder.helpers.RECORDER_RUNNING_NOTIF_ID
-import org.fossify.voicerecorder.helpers.RECORDING_PAUSED
-import org.fossify.voicerecorder.helpers.RECORDING_RUNNING
-import org.fossify.voicerecorder.helpers.RECORDING_STOPPED
-import org.fossify.voicerecorder.helpers.STOP_AMPLITUDE_UPDATE
-import org.fossify.voicerecorder.helpers.TOGGLE_PAUSE
+import org.fossify.voicerecorder.helpers.*
 import org.fossify.voicerecorder.models.Events
 import org.fossify.voicerecorder.recorder.MediaRecorderWrapper
 import org.fossify.voicerecorder.recorder.Mp3Recorder
@@ -53,14 +37,11 @@ import java.util.TimerTask
 class RecorderService : Service() {
     companion object {
         var isRunning = false
-
         private const val AMPLITUDE_UPDATE_MS = 75L
     }
 
-
     private var recordingPath = ""
     private var resultUri: Uri? = null
-
     private var duration = 0
     private var status = RECORDING_STOPPED
     private var durationTimer = Timer()
@@ -70,9 +51,8 @@ class RecorderService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-
-        // 🔴 CRITICAL: promote to foreground immediately
-        startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
+        // 1. Immediately start foreground to prevent ANR or System Kill
+        startForegroundServiceCompat()
 
         when (intent?.action) {
             GET_RECORDER_INFO -> broadcastRecorderInfo()
@@ -84,6 +64,111 @@ class RecorderService : Service() {
 
         return START_STICKY
     }
+
+    private fun startForegroundServiceCompat() {
+        val notification = showNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(RECORDER_RUNNING_NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(RECORDER_RUNNING_NOTIF_ID, notification)
+        }
+    }
+
+    private fun startRecording() {
+        if (status == RECORDING_RUNNING) return
+        isRunning = true
+        updateWidgets(true)
+
+        // 2. Check if phone is unlocked. If NOT unlocked (Boot), we MUST use safe internal storage.
+        val userManager = getSystemService(Context.USER_SERVICE) as UserManager
+        val isUserUnlocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) userManager.isUserUnlocked else true
+        
+        // If locked, force safe fallback. If unlocked, try standard path first.
+        val forceSafeStorage = !isUserUnlocked
+
+        try {
+            setupRecorderEngine(useSafeFallback = forceSafeStorage)
+            beginRecordingSequence()
+        } catch (e: Exception) {
+            // If the first attempt failed, try the fallback (if we didn't already)
+            if (!forceSafeStorage) {
+                try {
+                    setupRecorderEngine(useSafeFallback = true)
+                    beginRecordingSequence()
+                } catch (fatal: Exception) {
+                    cleanupAndStop()
+                }
+            } else {
+                cleanupAndStop()
+            }
+        }
+    }
+
+    private fun setupRecorderEngine(useSafeFallback: Boolean) {
+        val extension = config.getExtension()
+
+        if (useSafeFallback) {
+            // SAFE STORAGE: Device Protected Storage (Works before Unlock)
+            // We use getExternalFilesDir because it usually maps to a writable partition even in BFU (Before First Unlock) state on modern Android
+            val secureFolder = getExternalFilesDir(null) ?: filesDir
+            if (!secureFolder.exists()) secureFolder.mkdirs()
+
+            val safeFile = File(secureFolder, "AutoRecord_${getCurrentFormattedDateTime()}.$extension")
+            recordingPath = safeFile.absolutePath
+
+            recorder = if (recordMp3()) Mp3Recorder(this) else MediaRecorderWrapper(this)
+            recorder?.setOutputFile(recordingPath)
+
+            resultUri = FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.provider", safeFile)
+        } else {
+            // STANDARD STORAGE: User configured folder (Only works after Unlock)
+            val defaultFolder = File(config.saveRecordingsFolder)
+            if (!defaultFolder.exists()) defaultFolder.mkdir()
+
+            recordingPath = "${defaultFolder.absolutePath}/${getCurrentFormattedDateTime()}.$extension"
+            recorder = if (recordMp3()) Mp3Recorder(this) else MediaRecorderWrapper(this)
+
+            if (isRPlus()) {
+                val fileUri = createDocumentUriUsingFirstParentTreeUri(recordingPath)
+                createSAFFileSdk30(recordingPath)
+                resultUri = fileUri
+                contentResolver.openFileDescriptor(fileUri, "w")!!.use { recorder?.setOutputFile(it) }
+            } else {
+                recorder?.setOutputFile(recordingPath)
+            }
+        }
+        recorder?.prepare()
+    }
+
+    private fun beginRecordingSequence() {
+        try {
+            recorder?.start()
+            duration = 0
+            status = RECORDING_RUNNING
+            broadcastRecorderInfo()
+
+            durationTimer.cancel()
+            durationTimer = Timer()
+            durationTimer.scheduleAtFixedRate(getDurationUpdateTask(), 1000, 1000)
+
+            startAmplitudeUpdates()
+
+            // Update notification to indicate success
+            startForegroundServiceCompat()
+        } catch (e: Exception) {
+            // If start() fails (e.g., Background Privacy restrictions), kill the service immediately
+            // so the user doesn't see a "Recording" notification that does nothing.
+            e.printStackTrace()
+            cleanupAndStop()
+        }
+    }
+
+    private fun cleanupAndStop() {
+        stopRecording()
+        stopForeground(true)
+        stopSelf()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         stopRecording()
@@ -91,67 +176,7 @@ class RecorderService : Service() {
         updateWidgets(false)
     }
 
-    // mp4 output format with aac encoding should produce good enough m4a files according to https://stackoverflow.com/a/33054794/1967672
-    @SuppressLint("DiscouragedApi")
-    private fun startRecording() {
-        isRunning = true
-        updateWidgets(true)
-        if (status == RECORDING_RUNNING) {
-            return
-        }
-
-        val defaultFolder = File(config.saveRecordingsFolder)
-        if (!defaultFolder.exists()) {
-            defaultFolder.mkdir()
-        }
-
-        val recordingFolder = defaultFolder.absolutePath
-        recordingPath = "$recordingFolder/${getCurrentFormattedDateTime()}.${config.getExtension()}"
-        resultUri = null
-
-        try {
-            recorder = if (recordMp3()) {
-                Mp3Recorder(this)
-            } else {
-                MediaRecorderWrapper(this)
-            }
-
-            if (isRPlus()) {
-                val fileUri = createDocumentUriUsingFirstParentTreeUri(recordingPath)
-                createSAFFileSdk30(recordingPath)
-                resultUri = fileUri
-                contentResolver.openFileDescriptor(fileUri, "w")!!
-                    .use { recorder?.setOutputFile(it) }
-            } else if (isPathOnSD(recordingPath)) {
-                var document = getDocumentFile(recordingPath.getParentPath())
-                document = document?.createFile("", recordingPath.getFilenameFromPath())
-                check(document != null) { "Failed to create document on SD Card" }
-                resultUri = document.uri
-                contentResolver.openFileDescriptor(document.uri, "w")!!
-                    .use { recorder?.setOutputFile(it) }
-            } else {
-                recorder?.setOutputFile(recordingPath)
-                resultUri = FileProvider.getUriForFile(
-                    this, "${BuildConfig.APPLICATION_ID}.provider", File(recordingPath)
-                )
-            }
-
-            recorder?.prepare()
-            recorder?.start()
-            duration = 0
-            status = RECORDING_RUNNING
-            broadcastRecorderInfo()
-            startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
-
-            durationTimer = Timer()
-            durationTimer.scheduleAtFixedRate(getDurationUpdateTask(), 1000, 1000)
-
-            startAmplitudeUpdates()
-        } catch (e: Exception) {
-            showErrorToast(e)
-            stopRecording()
-        }
-    }
+    // --- Helper Methods ---
 
     private fun stopRecording() {
         durationTimer.cancel()
@@ -162,17 +187,7 @@ class RecorderService : Service() {
             try {
                 stop()
                 release()
-            } catch (
-                @Suppress(
-                    "TooGenericExceptionCaught",
-                    "SwallowedException"
-                ) e: RuntimeException
-            ) {
-                toast(R.string.recording_too_short)
-            } catch (e: Exception) {
-                showErrorToast(e)
-                e.printStackTrace()
-            }
+            } catch (e: Exception) { e.printStackTrace() }
 
             ensureBackgroundThread {
                 scanRecording()
@@ -180,81 +195,6 @@ class RecorderService : Service() {
             }
         }
         recorder = null
-    }
-
-    private fun cancelRecording() {
-        durationTimer.cancel()
-        amplitudeTimer.cancel()
-        status = RECORDING_STOPPED
-
-        recorder?.apply {
-            try {
-                stop()
-                release()
-            } catch (ignored: Exception) {
-            }
-        }
-
-        recorder = null
-        if (isRPlus()) {
-            val recordingUri = createDocumentUriUsingFirstParentTreeUri(recordingPath)
-            DocumentsContract.deleteDocument(contentResolver, recordingUri)
-        } else {
-            File(recordingPath).delete()
-        }
-
-        EventBus.getDefault().post(Events.RecordingCompleted())
-        stopSelf()
-    }
-
-    private fun broadcastRecorderInfo() {
-        broadcastDuration()
-        broadcastStatus()
-        startAmplitudeUpdates()
-    }
-
-    @SuppressLint("DiscouragedApi")
-    private fun startAmplitudeUpdates() {
-        amplitudeTimer.cancel()
-        amplitudeTimer = Timer()
-        amplitudeTimer.scheduleAtFixedRate(getAmplitudeUpdateTask(), 0, AMPLITUDE_UPDATE_MS)
-    }
-
-    @SuppressLint("NewApi")
-    private fun togglePause() {
-        try {
-            if (status == RECORDING_RUNNING) {
-                recorder?.pause()
-                status = RECORDING_PAUSED
-            } else if (status == RECORDING_PAUSED) {
-                recorder?.resume()
-                status = RECORDING_RUNNING
-            }
-            broadcastStatus()
-            startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
-        } catch (e: Exception) {
-            showErrorToast(e)
-        }
-    }
-
-    private fun scanRecording() {
-        MediaScannerConnection.scanFile(
-            this,
-            arrayOf(recordingPath),
-            arrayOf(recordingPath.getMimeType())
-        ) { _, uri ->
-            if (uri == null) {
-                toast(org.fossify.commons.R.string.unknown_error_occurred)
-                return@scanFile
-            }
-
-            recordingSavedSuccessfully(resultUri ?: uri)
-        }
-    }
-
-    private fun recordingSavedSuccessfully(savedUri: Uri) {
-        toast(R.string.recording_saved_successfully)
-        EventBus.getDefault().post(Events.RecordingSaved(savedUri))
     }
 
     private fun getDurationUpdateTask() = object : TimerTask() {
@@ -266,70 +206,80 @@ class RecorderService : Service() {
         }
     }
 
-    private fun getAmplitudeUpdateTask() = object : TimerTask() {
-        override fun run() {
-            if (recorder != null) {
-                try {
-                    EventBus.getDefault()
-                        .post(Events.RecordingAmplitude(recorder!!.getMaxAmplitude()))
-                } catch (ignored: Exception) {
-                }
-            }
-        }
-    }
-
     private fun showNotification(): Notification {
         val channelId = "simple_recorder"
         val label = getString(R.string.app_name)
-        val notificationManager =
-            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        NotificationChannel(channelId, label, NotificationManager.IMPORTANCE_DEFAULT).apply {
+        NotificationChannel(channelId, label, NotificationManager.IMPORTANCE_LOW).apply {
             setSound(null, null)
             notificationManager.createNotificationChannel(this)
         }
 
-        val icon = R.drawable.ic_graphic_eq_vector
-        val title = label
-        val visibility = NotificationCompat.VISIBILITY_PUBLIC
         var text = getString(R.string.recording)
-        if (status == RECORDING_PAUSED) {
-            text += " (${getString(R.string.paused)})"
-        }
+        if (status == RECORDING_PAUSED) text += " (${getString(R.string.paused)})"
 
-        val builder = NotificationCompat.Builder(this, channelId)
-            .setContentTitle(title)
+        return NotificationCompat.Builder(this, channelId)
+            .setContentTitle(label)
             .setContentText(text)
-            .setSmallIcon(icon)
+            .setSmallIcon(R.drawable.ic_graphic_eq_vector)
             .setContentIntent(getOpenAppIntent())
-            .setPriority(NotificationManager.IMPORTANCE_DEFAULT)
-            .setVisibility(visibility)
-            .setSound(null)
             .setOngoing(true)
-            .setAutoCancel(true)
-
-        return builder.build()
+            .setSilent(true)
+            // Add Microphone Service Type for Android 14 compatibility within the builder as well if needed by libraries
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .build()
     }
 
     private fun getOpenAppIntent(): PendingIntent {
         val intent = getLaunchIntent() ?: Intent(this, SplashActivity::class.java)
-        return PendingIntent.getActivity(
-            this,
-            RECORDER_RUNNING_NOTIF_ID,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        return PendingIntent.getActivity(this, RECORDER_RUNNING_NOTIF_ID, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    private fun broadcastDuration() {
-        EventBus.getDefault().post(Events.RecordingDuration(duration))
+    private fun scanRecording() {
+        MediaScannerConnection.scanFile(this, arrayOf(recordingPath), arrayOf(recordingPath.getMimeType())) { _, uri ->
+            if (uri != null) {
+                EventBus.getDefault().post(Events.RecordingSaved(resultUri ?: uri))
+            }
+        }
     }
 
-    private fun broadcastStatus() {
-        EventBus.getDefault().post(Events.RecordingStatus(status))
+    private fun broadcastDuration() = EventBus.getDefault().post(Events.RecordingDuration(duration))
+    private fun broadcastStatus() = EventBus.getDefault().post(Events.RecordingStatus(status))
+    private fun recordMp3() = config.extension == EXTENSION_MP3
+
+    private fun startAmplitudeUpdates() {
+        amplitudeTimer.cancel()
+        amplitudeTimer = Timer()
+        amplitudeTimer.scheduleAtFixedRate(object : TimerTask() {
+            override fun run() {
+                recorder?.let { EventBus.getDefault().post(Events.RecordingAmplitude(it.getMaxAmplitude())) }
+            }
+        }, 0, AMPLITUDE_UPDATE_MS)
     }
 
-    private fun recordMp3(): Boolean {
-        return config.extension == EXTENSION_MP3
+    private fun togglePause() {
+        try {
+            if (status == RECORDING_RUNNING) {
+                recorder?.pause()
+                status = RECORDING_PAUSED
+            } else if (status == RECORDING_PAUSED) {
+                recorder?.resume()
+                status = RECORDING_RUNNING
+            }
+            broadcastStatus()
+            startForegroundServiceCompat()
+        } catch (e: Exception) { showErrorToast(e) }
+    }
+
+    private fun cancelRecording() {
+        durationTimer.cancel()
+        amplitudeTimer.cancel()
+        status = RECORDING_STOPPED
+        recorder?.apply { try { stop(); release() } catch (e: Exception) {} }
+        recorder = null
+        File(recordingPath).delete()
+        EventBus.getDefault().post(Events.RecordingCompleted())
+        stopSelf()
     }
 }
