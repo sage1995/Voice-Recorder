@@ -59,14 +59,19 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_record_display" />
         </receiver>
-        
-        <receiver 
+
+        <receiver
             android:name=".receivers.BootReceiver"
-            android:exported="true"> <intent-filter>
+            android:exported="true"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+
+            <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- Optional OEM fast-boot support -->
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+        
         <receiver 
             android:name=".receivers.DailyRecordReceiver" 
             android:exported="false" />
